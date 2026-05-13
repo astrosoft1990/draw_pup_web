@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>雷达 PUP 产品浏览器</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">雷达 PUP 产品浏览器</div>
+    <div class="controls">
+      <label>站号 <select id="sel-station"></select></label>
+      <label>产品 <select id="sel-product" disabled></select></label>
+      <label>日期 <input type="date" id="sel-date" disabled></label>
+      <span id="status" class="status"></span>
+    </div>
+  </header>
+
+  <main class="viewer">
+    <div class="image-wrap">
+      <img id="frame" alt="">
+      <div class="overlay" id="overlay-loading">渲染中…</div>
+      <div class="overlay overlay-error" id="overlay-error"></div>
+      <div class="overlay overlay-empty" id="overlay-empty">请先选择 站号 / 产品 / 日期</div>
+      <div class="frame-info">
+        <span id="info-time">--:--:--</span>
+        <span id="info-elev"></span>
+        <span id="info-count"></span>
+      </div>
+    </div>
+    <aside class="elevation-bar" id="elevation-bar"></aside>
+  </main>
+
+  <footer class="bottombar">
+    <div class="timeline-row">
+      <button id="btn-play" title="播放/暂停 (空格)">▶</button>
+      <div class="timeline" id="timeline"></div>
+    </div>
+    <div class="hint">
+      <kbd>←</kbd> <kbd>→</kbd> 切换时刻 &nbsp;·&nbsp;
+      <kbd>↑</kbd> <kbd>↓</kbd> 切换仰角 &nbsp;·&nbsp;
+      <kbd>Space</kbd> 播放/暂停 &nbsp;·&nbsp;
+      <kbd>Home</kbd>/<kbd>End</kbd> 首/末帧
+    </div>
+  </footer>
+
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
