@@ -5,7 +5,7 @@ import logging
 import os
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, render_template, request
+from flask import Flask, abort, jsonify, render_template, request, send_from_directory
 
 import config
 from radar.index_cache import IndexCache
@@ -88,15 +88,30 @@ def _safe_abs_inside_root(raw: str) -> str | None:
 
 def _public_url_for_cache(bin_path: str) -> str:
     cache = cache_file_for(config.CACHE_DIR, bin_path)
-    return f"/static/cache/{cache.name}"
+    rel = cache.relative_to(config.CACHE_DIR).as_posix()
+    return f"/cache/{rel}"
 
 
 # ---------------------------------------------------------------------------
-# Pages
+# Pages & cache serving
 # ---------------------------------------------------------------------------
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.get("/cache/<path:relpath>")
+def serve_cache(relpath: str):
+    """Serve a rendered PNG out of CACHE_DIR (which may be on a UNC share).
+
+    `send_from_directory` performs path-traversal protection: any `..` or
+    absolute components in `relpath` will be rejected.
+    """
+    return send_from_directory(
+        str(config.CACHE_DIR),
+        relpath,
+        max_age=3600,
+    )
 
 
 # ---------------------------------------------------------------------------

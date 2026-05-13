@@ -19,20 +19,30 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import cinrad  # noqa: E402
 
+from .parser import parse_filename
+
 log = logging.getLogger(__name__)
 
 _RENDER_LOCK = threading.Lock()
 
 
-def cache_key_for(path: str) -> str:
-    """Stable cache key from absolute file path."""
-    h = hashlib.md5(path.encode("utf-8")).hexdigest()[:16]
-    name = Path(path).stem
-    return f"{name}_{h}"
-
-
 def cache_file_for(cache_dir: Path, path: str) -> Path:
-    return cache_dir / f"{cache_key_for(path)}.png"
+    """Path to the cached PNG for a given radar bin file.
+
+    Mirrors the source layout:
+        cache_dir / <station> / <year> / <date> / <product> / <filename>.png
+
+    Falls back to a flat hashed name under `_misc/` for files whose name
+    can't be parsed.
+    """
+    p = Path(path)
+    rf = parse_filename(p)
+    if rf is not None:
+        year = rf.datetime_utc.strftime("%Y")
+        date = rf.datetime_utc.strftime("%Y%m%d")
+        return cache_dir / rf.station / year / date / rf.product / (p.stem + ".png")
+    h = hashlib.md5(path.encode("utf-8")).hexdigest()[:16]
+    return cache_dir / "_misc" / f"{p.stem}_{h}.png"
 
 
 def render_to_cache(bin_path: str, cache_dir: Path) -> Path:
@@ -53,6 +63,7 @@ def render_to_cache(bin_path: str, cache_dir: Path) -> Path:
         if out.exists() and out.stat().st_size > 0:
             return out
 
+        out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(".tmp.png")
         try:
             f = cinrad.io.read_auto(str(src))
