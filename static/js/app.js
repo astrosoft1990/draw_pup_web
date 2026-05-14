@@ -136,6 +136,7 @@ function fillSelect(sel, items, placeholder) {
       o.value = v.code ?? v.value ?? "";
       o.textContent = v.label ?? v.code ?? "";
       if (v.name) o.title = v.name;
+      else if (v.label) o.title = v.label;
     }
     sel.appendChild(o);
   }

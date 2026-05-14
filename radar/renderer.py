@@ -68,7 +68,7 @@ def render_to_cache(bin_path: str, cache_dir: Path) -> Path:
         try:
             f = cinrad.io.read_auto(str(src))
             data = f.get_data()
-            fig = cinrad.visualize.PPI(data,style='white')
+            fig = cinrad.visualize.PPI(data,style='black')
             fig(str(tmp))
             tmp.replace(out)
             return out

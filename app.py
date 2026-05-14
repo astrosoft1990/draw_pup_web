@@ -15,6 +15,7 @@ from radar.renderer import (
     is_cached,
     render_to_cache,
 )
+from radar.parser import parse_filename
 from radar.scanner import RadarScanner
 from radar.station_names import StationNames
 
@@ -92,6 +93,18 @@ def _public_url_for_cache(bin_path: str) -> str:
     return f"/cache/{rel}"
 
 
+def _product_type_blocked(product: str) -> bool:
+    return product in config.PRODUCT_TYPE_BLACKLIST
+
+
+def _product_option(code: str) -> dict:
+    """Shape for /api/products items: code, label (shown in select), optional name (tooltip)."""
+    zh = config.PRODUCT_NAME_ZH.get(code)
+    if zh:
+        return {"code": code, "label": f"{code} {zh}", "name": zh}
+    return {"code": code, "label": code}
+
+
 # ---------------------------------------------------------------------------
 # Pages & cache serving
 # ---------------------------------------------------------------------------
@@ -151,7 +164,12 @@ def api_products():
     date = request.args.get("date", "").strip()
     if not (station and date):
         abort(400, "station and date are required")
-    return jsonify({"products": scanner.list_products(station, date)})
+    products = [
+        _product_option(p)
+        for p in scanner.list_products(station, date)
+        if not _product_type_blocked(p)
+    ]
+    return jsonify({"products": products})
 
 
 @app.get("/api/files")
@@ -177,6 +195,8 @@ def api_files():
     product = request.args.get("product", "").strip()
     if not (station and date and product):
         abort(400, "station, date and product are required")
+    if _product_type_blocked(product):
+        abort(404, "product type is blocked")
 
     files = scanner.list_files(station, date, product)
 
@@ -226,6 +246,9 @@ def api_render():
     if not raw:
         abort(400, "path is required")
     p = _validate_path(raw)
+    rf_meta = parse_filename(p)
+    if rf_meta is not None and _product_type_blocked(rf_meta.product):
+        abort(403, "product type is blocked")
 
     try:
         render_to_cache(str(p), config.CACHE_DIR)
@@ -257,6 +280,9 @@ def api_prerender():
         abs_path = _safe_abs_inside_root(raw)
         if abs_path is None:
             continue
+        prf = parse_filename(Path(abs_path))
+        if prf is not None and _product_type_blocked(prf.product):
+            continue
         priority = int(it.get("priority", 100))
         cleaned.append((abs_path, priority))
 
@@ -284,4 +310,4 @@ def api_cache_status():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5050, debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=5050, debug=False, threaded=True)
