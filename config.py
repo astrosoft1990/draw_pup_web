@@ -35,7 +35,7 @@ RENDER_DPI = 120
 
 # 产品类型黑名单：与数据目录下产品文件夹名一致（如 ZDR、VEL）。
 # 列入此集合的类型不会出现在 /api/products 中，也不会参与列表与绘图。
-PRODUCT_TYPE_BLACKLIST = frozenset({"CAR","CS","HI","M","SS","STI","TVS","VWP","WER"})  # 例如: frozenset({"CR", "ET"})
+PRODUCT_TYPE_BLACKLIST = frozenset({"CAR","CS","M","SS","STI","TVS","VWP","WER"})  # 例如: frozenset({"CR", "ET"})
 
 # 产品代码 -> 中文名（与目录/文件名中的产品代号一致）。未列出的产品仅显示代号。
 PRODUCT_NAME_ZH = {

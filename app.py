@@ -189,6 +189,9 @@ def api_files():
                 ...
             ]
         }
+
+    Query:
+        include_cached=1  # optional, include per-frame cache existence check
     """
     station = request.args.get("station", "").strip()
     date = request.args.get("date", "").strip()
@@ -199,6 +202,7 @@ def api_files():
         abort(404, "product type is blocked")
 
     files = scanner.list_files(station, date, product)
+    include_cached = request.args.get("include_cached", "").strip() in {"1", "true", "yes"}
 
     times: list = []
     time_labels: dict = {}
@@ -214,9 +218,14 @@ def api_files():
             elev_raws.add(rf.elevation_raw)
             elev_has_real = True
 
+        # NOTE:
+        # Checking cache existence for every frame can be very expensive on
+        # network shares (thousands of stat calls). Default to False and let
+        # the frontend poll /api/cache-status progressively.
+        cached = is_cached(str(rf.path), config.CACHE_DIR) if include_cached else False
         frames.append({
             **rf.to_dict(),
-            "cached": is_cached(str(rf.path), config.CACHE_DIR),
+            "cached": cached,
         })
 
     times.sort()

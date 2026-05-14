@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -17,13 +18,324 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 import cinrad  # noqa: E402
+import cartopy.crs as ccrs  # noqa: E402
+from matplotlib.cm import ScalarMappable  # noqa: E402
+from matplotlib.colors import Normalize  # noqa: E402
+from matplotlib.font_manager import FontProperties, findfont  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
+
+from cinrad.visualize.utils import add_shp  # noqa: E402
 
 from .parser import parse_filename
 
 log = logging.getLogger(__name__)
 
 _RENDER_LOCK = threading.Lock()
+_CJK_FONT_CANDIDATES = [
+    "Microsoft YaHei",
+    "SimHei",
+    "Noto Sans CJK SC",
+    "WenQuanYi Micro Hei",
+]
+
+
+def _pick_cjk_font() -> FontProperties | None:
+    for family in _CJK_FONT_CANDIDATES:
+        try:
+            fp = FontProperties(family=family)
+            findfont(fp, fallback_to_default=False)
+            return fp
+        except Exception:
+            continue
+    return None
+
+
+def _safe_attr_float(attrs: dict, key: str, default: float = 0.0) -> float:
+    v = attrs.get(key, default)
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _format_scan_time(attrs: dict) -> tuple[str, str]:
+    raw = attrs.get("scan_time")
+    if raw is None:
+        return "-", "-"
+    text = str(raw).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y%m%d%H%M%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            dt = datetime.strptime(text[:19], fmt)
+            return dt.strftime("%Y.%m.%d"), dt.strftime("%H:%M")
+        except ValueError:
+            continue
+    return text, "-"
+
+
+def _fixed_site_extent(
+    site_lon: float,
+    site_lat: float,
+    radius_km: float = 200.0,
+) -> list[float]:
+    """Build fixed map extent around site center with radius in kilometers."""
+    lat_deg = radius_km / 111.0
+    cos_lat = max(0.15, abs(np.cos(np.deg2rad(site_lat))))
+    lon_deg = radius_km / (111.0 * cos_lat)
+    return [
+        site_lon - lon_deg,
+        site_lon + lon_deg,
+        site_lat - lat_deg,
+        site_lat + lat_deg,
+    ]
+
+
+def _render_hi_style(data, out_file: Path, src_path: Path) -> None:
+    """Render HI product in a black-theme style close to common PPI output."""
+    attrs = getattr(data, "attrs", {}) or {}
+
+    fig = plt.figure(figsize=(10, 8), facecolor="black")
+    ax = fig.add_axes([0.05, 0.06, 0.78, 0.88], projection=ccrs.PlateCarree())
+    ax.set_facecolor("black")
+
+    lon_arr = np.asarray(data["longitude"].values if "longitude" in data else [], dtype=float)
+    lat_arr = np.asarray(data["latitude"].values if "latitude" in data else [], dtype=float)
+    hail_pos = np.asarray(
+        data["hail_possibility"].values if "hail_possibility" in data else [],
+        dtype=float,
+    )
+    hail_size = np.asarray(data["hail_size"].values if "hail_size" in data else [], dtype=float)
+
+    valid = (
+        np.isfinite(lon_arr)
+        & np.isfinite(lat_arr)
+        & np.isfinite(hail_pos)
+        & (hail_pos >= 20.0)
+    ) if lon_arr.size and lat_arr.size and hail_pos.size else np.zeros(0, dtype=bool)
+    if hail_size.size == hail_pos.size:
+        valid = valid & np.isfinite(hail_size)
+
+    norm = Normalize(vmin=20, vmax=100)
+    cmap = plt.get_cmap("turbo")
+    mappable = ScalarMappable(norm=norm, cmap=cmap)
+    cjk_fp = _pick_cjk_font()
+    max_prob = 0.0
+    fallback_lon = float(np.nanmean(lon_arr)) if lon_arr.size else 0.0
+    fallback_lat = float(np.nanmean(lat_arr)) if lat_arr.size else 0.0
+    site_lon = _safe_attr_float(attrs, "site_longitude", fallback_lon)
+    site_lat = _safe_attr_float(attrs, "site_latitude", fallback_lat)
+    extent = _fixed_site_extent(site_lon, site_lat, radius_km=200.0)
+    ax.set_extent(extent, crs=ccrs.PlateCarree())
+
+    if valid.size and np.any(valid):
+        lon = lon_arr[valid]
+        lat = lat_arr[valid]
+        hp = hail_pos[valid]
+        hs = hail_size[valid] if hail_size.size == hail_pos.size else np.zeros_like(hp)
+
+        max_prob = float(np.max(hp))
+        colors = cmap(norm(hp))
+
+        cls_1 = (hs >= 0.01) & (hs < 0.5)
+        cls_2 = (hs >= 0.5) & (hs < 1.0)
+        cls_3 = (hs >= 1.0) & (hs < 2.5)
+        cls_4 = (hs >= 2.5)
+
+        if np.any(cls_1):
+            ax.scatter(
+                lon[cls_1],
+                lat[cls_1],
+                marker="^",
+                s=70,
+                facecolors="none",
+                edgecolors=colors[cls_1],
+                linewidths=1.3,
+                transform=ccrs.PlateCarree(),
+                zorder=5,
+            )
+        if np.any(cls_2):
+            mappable = ax.scatter(
+                lon[cls_2],
+                lat[cls_2],
+                marker="^",
+                s=82,
+                c=hp[cls_2],
+                cmap=cmap,
+                norm=norm,
+                linewidths=0.6,
+                edgecolors="white",
+                transform=ccrs.PlateCarree(),
+                zorder=5,
+            )
+        if np.any(cls_3):
+            mappable = ax.scatter(
+                lon[cls_3],
+                lat[cls_3],
+                marker="^",
+                s=90,
+                c=hp[cls_3],
+                cmap=cmap,
+                norm=norm,
+                linewidths=0.6,
+                edgecolors="white",
+                transform=ccrs.PlateCarree(),
+                zorder=5,
+            )
+            ax.scatter(
+                lon[cls_3],
+                lat[cls_3],
+                s=95,
+                marker="x",
+                c="#ffd400",
+                linewidths=1.6,
+                transform=ccrs.PlateCarree(),
+                zorder=6,
+            )
+        if np.any(cls_4):
+            mappable = ax.scatter(
+                lon[cls_4],
+                lat[cls_4],
+                marker="^",
+                s=100,
+                c=hp[cls_4],
+                cmap=cmap,
+                norm=norm,
+                linewidths=0.8,
+                edgecolors="white",
+                transform=ccrs.PlateCarree(),
+                zorder=5,
+            )
+            ax.scatter(
+                lon[cls_4],
+                lat[cls_4],
+                s=110,
+                marker="x",
+                c="#ff3b3b",
+                linewidths=1.8,
+                transform=ccrs.PlateCarree(),
+                zorder=6,
+            )
+
+    else:
+        ax.text(
+            site_lon,
+            site_lat,
+            "No HI Targets",
+            color="white",
+            fontsize=13,
+            ha="center",
+            va="center",
+            alpha=0.85,
+            transform=ccrs.PlateCarree(),
+            zorder=7,
+        )
+
+    add_shp(
+        ax,
+        ccrs.PlateCarree(),
+        coastline=False,
+        style="black",
+        extent=ax.get_extent(ccrs.PlateCarree()),
+    )
+    ax.gridlines(draw_labels=False, color="#3a3a3a", linestyle="--", linewidth=0.5, alpha=0.45)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    if "geo" in ax.spines:
+        ax.spines["geo"].set_color("#707070")
+        ax.spines["geo"].set_linewidth(0.8)
+
+    cbar = fig.colorbar(mappable, ax=ax, fraction=0.046, pad=0.05)
+    if cjk_fp is not None:
+        cbar.set_label("冰雹概率(%)", color="white", fontproperties=cjk_fp)
+    else:
+        cbar.set_label("冰雹概率(%)", color="white")
+    cbar.ax.tick_params(colors="white")
+    cbar.outline.set_edgecolor("white")
+
+    legend_handles = [
+        Line2D(
+            [],
+            [],
+            marker="^",
+            markersize=8,
+            markerfacecolor="none",
+            markeredgecolor="white",
+            linestyle="None",
+            label="0.1-5 mm：空心三角",
+        ),
+        Line2D(
+            [],
+            [],
+            marker="^",
+            markersize=8,
+            markerfacecolor="#37f563",
+            markeredgecolor="white",
+            linestyle="None",
+            label="5-10 mm：实心三角",
+        ),
+        Line2D(
+            [],
+            [],
+            marker="^",
+            markersize=8,
+            markerfacecolor="#f6f242",
+            markeredgecolor="white",
+            markeredgewidth=0.8,
+            linestyle="None",
+            label="10-25 mm：三角 + 黄X",
+        ),
+        Line2D(
+            [],
+            [],
+            marker="^",
+            markersize=8,
+            markerfacecolor="#ff8a1f",
+            markeredgecolor="white",
+            markeredgewidth=0.8,
+            linestyle="None",
+            label="25-100 mm：三角 + 红X",
+        ),
+    ]
+    legend = ax.legend(
+        handles=legend_handles,
+        loc="lower left",
+        frameon=True,
+        fontsize=9,
+        facecolor="black",
+        edgecolor="#aaaaaa",
+        labelcolor="white",
+    )
+    for text in legend.get_texts():
+        text.set_color("white")
+        if cjk_fp is not None:
+            text.set_fontproperties(cjk_fp)
+
+    rf = parse_filename(src_path)
+    date_text, time_text = _format_scan_time(attrs)
+    site_code = attrs.get("site_code", rf.station if rf else "Unknown")
+    task = attrs.get("task", "Unknown")
+    elev = rf.elevation_deg if rf else 0.0
+    title = "Hail Index"
+    info_lines = [
+        title,
+        f"Date: {date_text}",
+        f"Time: {time_text}",
+        f"RDA: {site_code}",
+        f"Task: {task}",
+        f"Elev: {elev:.2f}deg" if isinstance(elev, float) else f"Elev: {elev}",
+        f"Max: {max_prob:.1f}%",
+    ]
+    fig.text(
+        0.86,
+        0.93,
+        "\n".join(info_lines),
+        color="white",
+        fontsize=11,
+        ha="left",
+        va="top",
+    )
+    fig.savefig(str(out_file), facecolor=fig.get_facecolor())
 
 
 def cache_file_for(cache_dir: Path, path: str) -> Path:
@@ -68,8 +380,12 @@ def render_to_cache(bin_path: str, cache_dir: Path) -> Path:
         try:
             f = cinrad.io.read_auto(str(src))
             data = f.get_data()
-            fig = cinrad.visualize.PPI(data,style='black')
-            fig(str(tmp))
+            rf = parse_filename(src)
+            if rf is not None and rf.product == "HI":
+                _render_hi_style(data, tmp, src)
+            else:
+                fig = cinrad.visualize.PPI(data, style="black")
+                fig(str(tmp))
             tmp.replace(out)
             return out
         except Exception:

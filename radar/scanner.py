@@ -113,7 +113,8 @@ class RadarScanner:
         if product_dir and product_dir.is_dir():
             try:
                 for p in product_dir.iterdir():
-                    if not p.is_file():
+                    # Avoid per-entry stat() on network file systems.
+                    if not p.name.endswith(".bin"):
                         continue
                     rf = parse_filename(p)
                     if rf is not None:
