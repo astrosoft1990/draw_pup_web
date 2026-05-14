@@ -338,6 +338,391 @@ def _render_hi_style(data, out_file: Path, src_path: Path) -> None:
     fig.savefig(str(out_file), facecolor=fig.get_facecolor())
 
 
+def _render_m_style(data, out_file: Path, src_path: Path) -> None:
+    """Render M product using circle markers colored by meso_mxrv (m/s)."""
+    attrs = getattr(data, "attrs", {}) or {}
+
+    fig = plt.figure(figsize=(10, 8), facecolor="black")
+    ax = fig.add_axes([0.05, 0.06, 0.78, 0.88], projection=ccrs.PlateCarree())
+    ax.set_facecolor("black")
+
+    lon_arr = np.asarray(data["longitude"].values if "longitude" in data else [], dtype=float)
+    lat_arr = np.asarray(data["latitude"].values if "latitude" in data else [], dtype=float)
+    mxrv = np.asarray(data["meso_mxrv"].values if "meso_mxrv" in data else [], dtype=float)
+
+    valid = (
+        np.isfinite(lon_arr)
+        & np.isfinite(lat_arr)
+        & np.isfinite(mxrv)
+    ) if lon_arr.size and lat_arr.size and mxrv.size else np.zeros(0, dtype=bool)
+
+    cjk_fp = _pick_cjk_font()
+    max_mxrv = 0.0
+    norm = Normalize(vmin=0, vmax=100)
+    cmap = plt.get_cmap("YlOrRd")
+    mappable = ScalarMappable(norm=norm, cmap=cmap)
+
+    fallback_lon = float(np.nanmean(lon_arr)) if lon_arr.size else 0.0
+    fallback_lat = float(np.nanmean(lat_arr)) if lat_arr.size else 0.0
+    site_lon = _safe_attr_float(attrs, "site_longitude", fallback_lon)
+    site_lat = _safe_attr_float(attrs, "site_latitude", fallback_lat)
+    extent = _fixed_site_extent(site_lon, site_lat, radius_km=200.0)
+    ax.set_extent(extent, crs=ccrs.PlateCarree())
+
+    if valid.size and np.any(valid):
+        lon = lon_arr[valid]
+        lat = lat_arr[valid]
+        rv = mxrv[valid]
+        max_mxrv = float(np.max(rv))
+        mappable = ax.scatter(
+            lon,
+            lat,
+            marker="o",
+            s=95,
+            c=rv,
+            cmap=cmap,
+            norm=norm,
+            linewidths=1.0,
+            edgecolors="white",
+            alpha=0.95,
+            transform=ccrs.PlateCarree(),
+            zorder=6,
+        )
+    else:
+        ax.text(
+            site_lon,
+            site_lat,
+            "No M Targets",
+            color="white",
+            fontsize=13,
+            ha="center",
+            va="center",
+            alpha=0.85,
+            transform=ccrs.PlateCarree(),
+            zorder=7,
+        )
+
+    add_shp(
+        ax,
+        ccrs.PlateCarree(),
+        coastline=False,
+        style="black",
+        extent=ax.get_extent(ccrs.PlateCarree()),
+    )
+    ax.gridlines(draw_labels=False, color="#3a3a3a", linestyle="--", linewidth=0.5, alpha=0.45)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    if "geo" in ax.spines:
+        ax.spines["geo"].set_color("#707070")
+        ax.spines["geo"].set_linewidth(0.8)
+
+    cbar = fig.colorbar(mappable, ax=ax, fraction=0.046, pad=0.05)
+    if cjk_fp is not None:
+        cbar.set_label("最大旋转速度(m/s)", color="white", fontproperties=cjk_fp)
+    else:
+        cbar.set_label("最大旋转速度(m/s)", color="white")
+    cbar.ax.tick_params(colors="white")
+    cbar.outline.set_edgecolor("white")
+
+    legend = ax.legend(
+        handles=[
+            Line2D(
+                [],
+                [],
+                marker="o",
+                markersize=8,
+                markerfacecolor="#ff8c00",
+                markeredgecolor="white",
+                linestyle="None",
+                label="中尺度旋转点（颜色表示强度）",
+            ),
+        ],
+        loc="lower left",
+        frameon=True,
+        fontsize=9,
+        facecolor="black",
+        edgecolor="#aaaaaa",
+        labelcolor="white",
+    )
+    for text in legend.get_texts():
+        text.set_color("white")
+        if cjk_fp is not None:
+            text.set_fontproperties(cjk_fp)
+
+    rf = parse_filename(src_path)
+    date_text, time_text = _format_scan_time(attrs)
+    site_code = attrs.get("site_code", rf.station if rf else "Unknown")
+    task = attrs.get("task", "Unknown")
+    elev = rf.elevation_deg if rf else 0.0
+    title = "Mesocyclone"
+    info_lines = [
+        title,
+        f"Date: {date_text}",
+        f"Time: {time_text}",
+        f"RDA: {site_code}",
+        f"Task: {task}",
+        f"Elev: {elev:.2f}deg" if isinstance(elev, float) else f"Elev: {elev}",
+        f"Max: {max_mxrv:.1f}m/s",
+    ]
+    fig.text(
+        0.86,
+        0.93,
+        "\n".join(info_lines),
+        color="white",
+        fontsize=11,
+        ha="left",
+        va="top",
+    )
+    fig.savefig(str(out_file), facecolor=fig.get_facecolor())
+
+
+def _to_float(value, default: float = np.nan) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_lonlat_points(raw_points) -> list[tuple[float, float]]:
+    points: list[tuple[float, float]] = []
+    if not isinstance(raw_points, (list, tuple)):
+        return points
+    for p in raw_points:
+        if not isinstance(p, (list, tuple)) or len(p) < 2:
+            continue
+        lon = _to_float(p[0], np.nan)
+        lat = _to_float(p[1], np.nan)
+        if np.isfinite(lon) and np.isfinite(lat):
+            points.append((lon, lat))
+    return points
+
+
+def _render_sti_style(data, out_file: Path, src_path: Path) -> None:
+    """Render STI product with history/forecast tracks for all storms."""
+    attrs = {}
+    storms = []
+    if isinstance(data, dict):
+        attrs = data.get("attrs") or {}
+        storms = data.get("data") or []
+
+    fig = plt.figure(figsize=(10, 8), facecolor="black")
+    ax = fig.add_axes([0.05, 0.06, 0.78, 0.88], projection=ccrs.PlateCarree())
+    ax.set_facecolor("black")
+
+    cjk_fp = _pick_cjk_font()
+    norm = Normalize(vmin=0, vmax=70)
+    cmap = plt.get_cmap("turbo")
+    mappable = ScalarMappable(norm=norm, cmap=cmap)
+
+    all_lons = []
+    all_lats = []
+    max_ref_global = 0.0
+    for storm in storms:
+        if not isinstance(storm, dict):
+            continue
+        cur = _as_lonlat_points([storm.get("current_position")])
+        his = _as_lonlat_points(storm.get("history_position"))
+        fct = _as_lonlat_points(storm.get("forecast_position"))
+        pts = cur + his + fct
+        for lon, lat in pts:
+            all_lons.append(lon)
+            all_lats.append(lat)
+        max_ref_global = max(max_ref_global, _to_float(storm.get("max_ref"), 0.0))
+
+    fallback_lon = float(np.mean(all_lons)) if all_lons else 0.0
+    fallback_lat = float(np.mean(all_lats)) if all_lats else 0.0
+    site_lon = _safe_attr_float(attrs, "site_longitude", fallback_lon)
+    site_lat = _safe_attr_float(attrs, "site_latitude", fallback_lat)
+    extent = _fixed_site_extent(site_lon, site_lat, radius_km=200.0)
+    ax.set_extent(extent, crs=ccrs.PlateCarree())
+
+    plotted_count = 0
+    for storm in storms:
+        if not isinstance(storm, dict):
+            continue
+
+        ref = _to_float(storm.get("max_ref"), 0.0)
+        ref_clip = float(np.clip(ref, 0.0, 70.0))
+        color = cmap(norm(ref_clip))
+
+        cur = _as_lonlat_points([storm.get("current_position")])
+        his = _as_lonlat_points(storm.get("history_position"))
+        fct = _as_lonlat_points(storm.get("forecast_position"))
+        cur_pt = cur[0] if cur else None
+
+        if cur_pt is None and not his and not fct:
+            continue
+
+        plotted_count += 1
+
+        # 历史路径：实线连接；历史点与当前位置用实心圆。
+        if his and cur_pt is not None:
+            hx = [p[0] for p in his] + [cur_pt[0]]
+            hy = [p[1] for p in his] + [cur_pt[1]]
+            ax.plot(
+                hx,
+                hy,
+                linestyle="-",
+                linewidth=1.6,
+                color=color,
+                alpha=0.95,
+                transform=ccrs.PlateCarree(),
+                zorder=5,
+            )
+        elif len(his) >= 2:
+            ax.plot(
+                [p[0] for p in his],
+                [p[1] for p in his],
+                linestyle="-",
+                linewidth=1.6,
+                color=color,
+                alpha=0.95,
+                transform=ccrs.PlateCarree(),
+                zorder=5,
+            )
+
+        if his:
+            ax.scatter(
+                [p[0] for p in his],
+                [p[1] for p in his],
+                marker="o",
+                s=42,
+                c=[ref_clip] * len(his),
+                cmap=cmap,
+                norm=norm,
+                edgecolors="white",
+                linewidths=0.6,
+                transform=ccrs.PlateCarree(),
+                zorder=6,
+            )
+
+        if cur_pt is not None:
+            mappable = ax.scatter(
+                [cur_pt[0]],
+                [cur_pt[1]],
+                marker="o",
+                s=80,
+                c=[ref_clip],
+                cmap=cmap,
+                norm=norm,
+                edgecolors="white",
+                linewidths=1.0,
+                transform=ccrs.PlateCarree(),
+                zorder=7,
+            )
+
+        # 未来路径：虚线；未来点为空心圆。
+        if fct:
+            if cur_pt is not None:
+                f_line = [cur_pt] + fct
+            else:
+                f_line = fct
+            if len(f_line) >= 2:
+                ax.plot(
+                    [p[0] for p in f_line],
+                    [p[1] for p in f_line],
+                    linestyle="--",
+                    linewidth=1.5,
+                    color=color,
+                    alpha=0.95,
+                    transform=ccrs.PlateCarree(),
+                    zorder=5,
+                )
+            ax.scatter(
+                [p[0] for p in fct],
+                [p[1] for p in fct],
+                marker="o",
+                s=52,
+                facecolors="none",
+                edgecolors=[color],
+                linewidths=1.4,
+                transform=ccrs.PlateCarree(),
+                zorder=7,
+            )
+
+    if plotted_count == 0:
+        ax.text(
+            site_lon,
+            site_lat,
+            "No STI Targets",
+            color="white",
+            fontsize=13,
+            ha="center",
+            va="center",
+            alpha=0.85,
+            transform=ccrs.PlateCarree(),
+            zorder=7,
+        )
+
+    add_shp(
+        ax,
+        ccrs.PlateCarree(),
+        coastline=False,
+        style="black",
+        extent=ax.get_extent(ccrs.PlateCarree()),
+    )
+    ax.gridlines(draw_labels=False, color="#3a3a3a", linestyle="--", linewidth=0.5, alpha=0.45)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    if "geo" in ax.spines:
+        ax.spines["geo"].set_color("#707070")
+        ax.spines["geo"].set_linewidth(0.8)
+
+    cbar = fig.colorbar(mappable, ax=ax, fraction=0.046, pad=0.05)
+    if cjk_fp is not None:
+        cbar.set_label("最大反射率(dBZ)", color="white", fontproperties=cjk_fp)
+    else:
+        cbar.set_label("最大反射率(dBZ)", color="white")
+    cbar.ax.tick_params(colors="white")
+    cbar.outline.set_edgecolor("white")
+
+    legend = ax.legend(
+        handles=[
+            Line2D([], [], marker="o", markersize=7, markerfacecolor="#ff8c00", markeredgecolor="white", linestyle="None", label="历史/当前位置（实心圆）"),
+            Line2D([], [], marker="o", markersize=7, markerfacecolor="none", markeredgecolor="#ff8c00", linestyle="None", label="预测位置（空心圆）"),
+            Line2D([], [], color="#ff8c00", linestyle="-", linewidth=1.6, label="历史路径（实线）"),
+            Line2D([], [], color="#ff8c00", linestyle="--", linewidth=1.6, label="未来路径（虚线）"),
+        ],
+        loc="lower left",
+        frameon=True,
+        fontsize=9,
+        facecolor="black",
+        edgecolor="#aaaaaa",
+        labelcolor="white",
+    )
+    for text in legend.get_texts():
+        text.set_color("white")
+        if cjk_fp is not None:
+            text.set_fontproperties(cjk_fp)
+
+    rf = parse_filename(src_path)
+    date_text, time_text = _format_scan_time(attrs)
+    site_code = attrs.get("site_code", rf.station if rf else "Unknown")
+    task = attrs.get("task", "Unknown")
+    elev = rf.elevation_deg if rf else 0.0
+    sti_count = int(_to_float(attrs.get("sti_count"), plotted_count))
+    info_lines = [
+        "Storm Track Info",
+        f"Date: {date_text}",
+        f"Time: {time_text}",
+        f"RDA: {site_code}",
+        f"Task: {task}",
+        f"Elev: {elev:.2f}deg" if isinstance(elev, float) else f"Elev: {elev}",
+        f"Count: {sti_count}",
+        f"Max: {max_ref_global:.1f}dBZ",
+    ]
+    fig.text(
+        0.86,
+        0.93,
+        "\n".join(info_lines),
+        color="white",
+        fontsize=11,
+        ha="left",
+        va="top",
+    )
+    fig.savefig(str(out_file), facecolor=fig.get_facecolor())
+
+
 def cache_file_for(cache_dir: Path, path: str) -> Path:
     """Path to the cached PNG for a given radar bin file.
 
@@ -383,6 +768,10 @@ def render_to_cache(bin_path: str, cache_dir: Path) -> Path:
             rf = parse_filename(src)
             if rf is not None and rf.product == "HI":
                 _render_hi_style(data, tmp, src)
+            elif rf is not None and rf.product == "M":
+                _render_m_style(data, tmp, src)
+            elif rf is not None and rf.product == "STI":
+                _render_sti_style(data, tmp, src)
             else:
                 fig = cinrad.visualize.PPI(data, style="black")
                 fig(str(tmp))
