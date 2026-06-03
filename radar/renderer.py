@@ -723,6 +723,110 @@ def _render_sti_style(data, out_file: Path, src_path: Path) -> None:
     fig.savefig(str(out_file), facecolor=fig.get_facecolor())
 
 
+def _get_vwp_colors(rms_values: np.ndarray) -> list[str]:
+    """Map RMS values to VWP barb colors."""
+    color_map = [
+        (0, "#00FF00"),
+        (2, "#FFFF00"),
+        (4, "#FF0000"),
+        (6, "#00EFFF"),
+        (8, "#FF7BFF"),
+        (10, "#FFFFFF"),
+    ]
+    colors: list[str] = []
+    for value in rms_values:
+        color = color_map[0][1]
+        if np.isfinite(value):
+            for threshold, candidate in color_map:
+                if value > threshold:
+                    color = candidate
+        colors.append(color)
+    return colors
+
+
+def _render_vwp_style(data, out_file: Path, src_path: Path) -> None:
+    """Render VWP product using time-height wind barbs."""
+    attrs = getattr(data, "attrs", {}) or {}
+    cjk_fp = _pick_cjk_font()
+
+    height_raw = np.asarray(getattr(data, "height", []), dtype=float)
+    times_raw = np.asarray(getattr(data, "times", []), dtype=float)
+    wind_direction = np.asarray(data["wind_direction"].values if "wind_direction" in data else [], dtype=float)
+    wind_speed = np.asarray(data["wind_speed"].values if "wind_speed" in data else [], dtype=float)
+    rms = np.asarray(data["rms"].values if "rms" in data else [], dtype=float)
+
+    fig, ax = plt.subplots(1, 1, figsize=(12, 15))
+    fig.patch.set_facecolor("black")
+    ax.set_facecolor("black")
+
+    if (
+        height_raw.size == 0
+        or times_raw.size == 0
+        or wind_direction.size == 0
+        or wind_speed.size == 0
+        or rms.size == 0
+    ):
+        ax.text(0.5, 0.5, "No VWP Data", color="white", fontsize=14, ha="center", va="center", transform=ax.transAxes)
+    else:
+        height = np.round(height_raw / 1000.0, 1)
+        nums = np.arange(1, len(height) + 1, dtype=int)
+
+        times = [datetime.utcfromtimestamp(float(t)).strftime("%H:%M") for t in times_raw]
+        u = -wind_speed * np.sin(np.radians(wind_direction))
+        v = -wind_speed * np.cos(np.radians(wind_direction))
+
+        max_t = min(len(times), u.shape[0], v.shape[0], rms.shape[0])
+        for i in range(max_t):
+            colors = _get_vwp_colors(np.asarray(rms[i], dtype=float))
+            x = [times[i] for _ in range(len(nums))]
+            ax.barbs(
+                x,
+                nums,
+                u[i],
+                v[i],
+                rounding=False,
+                barb_increments=dict(half=2, full=4, flag=20),
+                sizes=dict(emptybarb=0.01, spacing=0.23, height=0.5, width=0.25),
+                color=colors,
+            )
+
+        ax.set_ylim(0.5, len(nums) + 0.5)
+        ax.set_yticks(nums)
+        ax.set_yticklabels([f"{h:.1f}" for h in height], color="white")
+        ax.grid(True, which="both", axis="y", linestyle="--", alpha=0.4)
+
+    ax.set_xlabel("Time(UTC)", color="white")
+    if cjk_fp is not None:
+        ax.set_ylabel("高度(km)", color="white", fontproperties=cjk_fp)
+    else:
+        ax.set_ylabel("高度(km)", color="white")
+    ax.tick_params(colors="white")
+
+    rf = parse_filename(src_path)
+    date_text, time_text = _format_scan_time(attrs)
+    site_code = attrs.get("site_code", rf.station if rf else "Unknown")
+    task = attrs.get("task", "Unknown")
+    info_lines = [
+        "Vertical Wind Profile",
+        f"Date: {date_text}",
+        f"Time: {time_text}",
+        f"RDA: {site_code}",
+        f"Task: {task}",
+    ]
+    fig.text(
+        0.80,
+        0.97,
+        "\n".join(info_lines),
+        color="white",
+        fontsize=11,
+        ha="left",
+        va="top",
+    )
+
+    plt.tight_layout(rect=[0.03, 0.03, 0.78, 0.98])
+    fig.savefig(str(out_file), facecolor=fig.get_facecolor())
+
+
 def cache_file_for(cache_dir: Path, path: str) -> Path:
     """Path to the cached PNG for a given radar bin file.
 
@@ -772,6 +876,8 @@ def render_to_cache(bin_path: str, cache_dir: Path) -> Path:
                 _render_m_style(data, tmp, src)
             elif rf is not None and rf.product == "STI":
                 _render_sti_style(data, tmp, src)
+            elif rf is not None and rf.product == "VWP":
+                _render_vwp_style(data, tmp, src)
             else:
                 fig = cinrad.visualize.PPI(data, style="black")
                 fig(str(tmp))
