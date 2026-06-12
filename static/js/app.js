@@ -36,7 +36,14 @@ const state = {
   cached: new Set(),   // bin paths confirmed rendered
   renderToken: 0,      // race-guard for async renders
   prerenderToken: 0,
+  filesSignature: "",
+  autoRefreshTimer: null,
+  loadingTimer: null,
+  timelineHoverIdx: -1,
 };
+
+const PRODUCT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const RENDER_LOADING_DELAY_MS = 500;
 
 // ---------- Utilities ----------
 function setStatus(msg, kind = "") {
@@ -147,6 +154,9 @@ function bindEvents() {
   els.date.addEventListener("change", onDateChange);
   els.product.addEventListener("change", onProductChange);
   els.btnPlay.addEventListener("click", togglePlay);
+  els.timeline.addEventListener("mousemove", onTimelineHover);
+  els.timeline.addEventListener("mouseleave", onTimelineLeave);
+  els.timeline.addEventListener("click", onTimelineClick);
   document.addEventListener("keydown", onKeyDown);
 }
 
@@ -155,6 +165,7 @@ let datesPollTimer = null;
 
 async function onStationChange() {
   state.station = els.station.value;
+  stopProductAutoRefresh();
   els.product.innerHTML = "<option value=''>—</option>";
   els.product.disabled = true;
   els.date.value = "";
@@ -200,6 +211,7 @@ async function loadDates(station) {
 
 async function onDateChange() {
   state.date = inputValueToYmd(els.date.value);
+  stopProductAutoRefresh();
   els.product.innerHTML = "<option value=''>—</option>";
   els.product.disabled = true;
 
@@ -221,6 +233,7 @@ async function onDateChange() {
 
 async function onProductChange() {
   state.product = els.product.value;
+  stopProductAutoRefresh();
   stopPlay();
   if (!state.product) {
     showOverlay(els.empty);
@@ -245,6 +258,7 @@ async function onProductChange() {
     buildElevationBar();
     setStatus("");
     await goTo(state.tIdx, state.eIdx);
+    startProductAutoRefresh();
   } catch (e) {
     setStatus("加载文件列表失败: " + e.message, "err");
     showOverlay(els.error, e.message);
@@ -266,6 +280,60 @@ function buildFromFiles(data) {
     const k = state.hasElev ? String(fr.elevation_raw) : "_";
     state.matrix[fr.time][k] = fr;
     if (fr.cached) state.cached.add(fr.path);
+  }
+  state.filesSignature = buildFilesSignature(data);
+}
+
+function buildFilesSignature(data) {
+  const tLast = data.times && data.times.length ? data.times[data.times.length - 1] : "";
+  const fLast = data.frames && data.frames.length ? data.frames[data.frames.length - 1].path : "";
+  return `${data.frames?.length || 0}|${data.times?.length || 0}|${tLast}|${fLast}`;
+}
+
+function stopProductAutoRefresh() {
+  if (state.autoRefreshTimer) {
+    clearInterval(state.autoRefreshTimer);
+    state.autoRefreshTimer = null;
+  }
+}
+
+function startProductAutoRefresh() {
+  stopProductAutoRefresh();
+  if (!state.station || !state.date || !state.product) return;
+  state.autoRefreshTimer = setInterval(refreshSelectedProductFiles, PRODUCT_REFRESH_INTERVAL_MS);
+}
+
+function pickElevationForTime(tIdx, preferredEIdx) {
+  if (!state.hasElev) return 0;
+  if (frameAt(tIdx, preferredEIdx)) return preferredEIdx;
+  for (let i = 0; i < state.elevationRaws.length; i++) {
+    if (frameAt(tIdx, i)) return i;
+  }
+  return 0;
+}
+
+async function refreshSelectedProductFiles() {
+  if (!state.station || !state.date || !state.product) return;
+  try {
+    const data = await getJson(
+      `/api/files?station=${encodeURIComponent(state.station)}` +
+      `&date=${encodeURIComponent(state.date)}` +
+      `&product=${encodeURIComponent(state.product)}`);
+    const nextSignature = buildFilesSignature(data);
+    if (nextSignature === state.filesSignature) return;
+
+    const prevEIdx = state.eIdx;
+    buildFromFiles(data);
+    if (state.times.length === 0) return;
+
+    buildTimeline();
+    buildElevationBar();
+    const latestTIdx = state.times.length - 1;
+    const nextEIdx = pickElevationForTime(latestTIdx, prevEIdx);
+    setStatus("检测到新文件，已自动切换到最新时次", "ok");
+    await goTo(latestTIdx, nextEIdx);
+  } catch (_) {
+    // ignore polling errors
   }
 }
 
@@ -318,16 +386,31 @@ async function goTo(tIdx, eIdx) {
 
 async function renderCurrent(fr) {
   const token = ++state.renderToken;
-  if (state.cached.has(fr.path)) {
-    // Predict the cached URL using same key generation as backend.
-    // Backend constructs /static/cache/<stem>_<md5_16>.png; we don't have md5
-    // here, so we'll just hit the render endpoint which is O(1) on cache hit.
+  if (state.loadingTimer) {
+    clearTimeout(state.loadingTimer);
+    state.loadingTimer = null;
   }
-  els.frame.classList.add("loading");
-  showOverlay(els.loading, "渲染中…");
+
+  const showLoading = () => {
+    els.frame.classList.add("loading");
+    showOverlay(els.loading, "渲染中…");
+  };
+  const cachedHint = state.cached.has(fr.path);
+  if (cachedHint) {
+    state.loadingTimer = setTimeout(() => {
+      if (token === state.renderToken) showLoading();
+    }, RENDER_LOADING_DELAY_MS);
+  } else {
+    showLoading();
+  }
+
   try {
     const data = await getJson(`/api/render?path=${encodeURIComponent(fr.path)}`);
     if (token !== state.renderToken) return; // a newer goTo has taken over
+    if (state.loadingTimer) {
+      clearTimeout(state.loadingTimer);
+      state.loadingTimer = null;
+    }
     if (!data.ok) throw new Error(data.error || "render failed");
     els.frame.src = data.url + "?t=" + Date.now(); // bust browser cache once
     els.frame.onload = () => {
@@ -342,6 +425,10 @@ async function renderCurrent(fr) {
     markCachedInUI(fr.path);
   } catch (e) {
     if (token !== state.renderToken) return;
+    if (state.loadingTimer) {
+      clearTimeout(state.loadingTimer);
+      state.loadingTimer = null;
+    }
     els.frame.classList.remove("loading");
     showOverlay(els.error, "渲染失败: " + e.message);
   }
@@ -420,7 +507,6 @@ function buildTimeline() {
     tick.title = state.timeLabels[i];
     const fr = frameAt(i, state.eIdx);
     if (fr && state.cached.has(fr.path)) tick.classList.add("cached");
-    tick.addEventListener("click", () => goTo(i, state.eIdx));
     els.timeline.appendChild(tick);
 
     if (i % labelStep === 0 || i === n - 1) {
@@ -431,6 +517,49 @@ function buildTimeline() {
       els.timeline.appendChild(lbl);
     }
   }
+}
+
+function timelineIdxFromEvent(e) {
+  const n = state.times.length;
+  if (n <= 0) return -1;
+  const rect = els.timeline.getBoundingClientRect();
+  if (rect.width <= 1) return -1;
+  const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+  const ratio = x / rect.width;
+  const idx = Math.round(ratio * (n - 1));
+  return Math.max(0, Math.min(n - 1, idx));
+}
+
+function ensureTimelineTip() {
+  let tip = els.timeline.querySelector(".timeline-tip");
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.className = "timeline-tip";
+    els.timeline.appendChild(tip);
+  }
+  return tip;
+}
+
+function onTimelineHover(e) {
+  const idx = timelineIdxFromEvent(e);
+  if (idx < 0) return;
+  state.timelineHoverIdx = idx;
+  const tip = ensureTimelineTip();
+  tip.textContent = state.timeLabels[idx] || state.times[idx] || "--:--:--";
+  tip.style.left = `${((idx + 0.5) / state.times.length) * 100}%`;
+  tip.classList.add("show");
+}
+
+function onTimelineLeave() {
+  state.timelineHoverIdx = -1;
+  const tip = els.timeline.querySelector(".timeline-tip");
+  if (tip) tip.classList.remove("show");
+}
+
+function onTimelineClick(e) {
+  const idx = timelineIdxFromEvent(e);
+  if (idx < 0) return;
+  goTo(idx, state.eIdx);
 }
 
 function buildElevationBar() {

@@ -23,6 +23,8 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 INDEX_CACHE_FILE = DATA_DIR / "index.json"
 INDEX_CACHE_TTL_SECONDS = 3600  # 1 hour
+# 后台索引刷新周期（秒）：每 30 分钟主动刷新一次
+INDEX_AUTO_REFRESH_SECONDS = 1800
 
 STATION_NAMES_FILE = DATA_DIR / "stations.json"
 

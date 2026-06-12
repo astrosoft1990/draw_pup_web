@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from pathlib import Path
 
 from flask import Flask, abort, jsonify, render_template, request, send_from_directory
@@ -35,6 +37,23 @@ index_cache = IndexCache(
 index_cache.warm_up()
 
 station_names = StationNames(config.STATION_NAMES_FILE)
+
+
+def _index_auto_refresh_loop() -> None:
+    """Refresh index snapshot periodically in background."""
+    interval = max(60.0, float(getattr(config, "INDEX_AUTO_REFRESH_SECONDS", 1800)))
+    while True:
+        time.sleep(interval)
+        started = index_cache.trigger_refresh(force=True)
+        if started:
+            app.logger.info("Auto index refresh triggered")
+
+
+threading.Thread(
+    target=_index_auto_refresh_loop,
+    daemon=True,
+    name="index-auto-refresh",
+).start()
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +116,10 @@ def _product_type_blocked(product: str) -> bool:
     return product in config.PRODUCT_TYPE_BLACKLIST
 
 
+def _station_enabled(station: str) -> bool:
+    return bool(station_names.name_for(station))
+
+
 def _product_option(code: str) -> dict:
     """Shape for /api/products items: code, label (shown in select), optional name (tooltip)."""
     zh = config.PRODUCT_NAME_ZH.get(code)
@@ -141,7 +164,8 @@ def _index_meta() -> dict:
 @app.get("/api/stations")
 def api_stations():
     codes = index_cache.stations()
-    return jsonify({"stations": station_names.annotate(codes), **_index_meta()})
+    stations = [s for s in station_names.annotate(codes) if s.get("name")]
+    return jsonify({"stations": stations, **_index_meta()})
 
 
 @app.get("/api/dates")
@@ -149,6 +173,8 @@ def api_dates():
     station = request.args.get("station", "").strip()
     if not station:
         abort(400, "station is required")
+    if not _station_enabled(station):
+        abort(404, "station is not enabled")
     return jsonify({"dates": index_cache.dates(station), **_index_meta()})
 
 
@@ -164,6 +190,8 @@ def api_products():
     date = request.args.get("date", "").strip()
     if not (station and date):
         abort(400, "station and date are required")
+    if not _station_enabled(station):
+        abort(404, "station is not enabled")
     products = [
         _product_option(p)
         for p in scanner.list_products(station, date)
@@ -198,6 +226,8 @@ def api_files():
     product = request.args.get("product", "").strip()
     if not (station and date and product):
         abort(400, "station, date and product are required")
+    if not _station_enabled(station):
+        abort(404, "station is not enabled")
     if _product_type_blocked(product):
         abort(404, "product type is blocked")
 
