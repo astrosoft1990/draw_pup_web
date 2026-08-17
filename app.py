@@ -56,6 +56,45 @@ threading.Thread(
 ).start()
 
 
+def _latest_product_file_path(station: str, product: str) -> str | None:
+    dates = index_cache.dates(station)
+    if not dates:
+        return None
+    latest_date = dates[-1]
+    files = scanner.list_files(station, latest_date, product)
+    if not files:
+        return None
+    return str(files[-1].path)
+
+
+def _cr_prerender_loop() -> None:
+    """Warm latest CR frame for all enabled stations periodically."""
+    interval = max(10.0, float(getattr(config, "CR_PRERENDER_INTERVAL_SECONDS", 30)))
+    product = "CR"
+    while True:
+        time.sleep(interval)
+        if _product_type_blocked(product):
+            continue
+        submitted = 0
+        for station in index_cache.stations():
+            if not _station_enabled(station):
+                continue
+            latest_path = _latest_product_file_path(station, product)
+            if latest_path is None:
+                continue
+            queue.submit(latest_path, priority=80)
+            submitted += 1
+        if submitted:
+            app.logger.info("CR prewarm submitted for %d stations", submitted)
+
+
+threading.Thread(
+    target=_cr_prerender_loop,
+    daemon=True,
+    name="cr-prewarm",
+).start()
+
+
 # ---------------------------------------------------------------------------
 # Security: only allow paths inside DATA_ROOT
 # ---------------------------------------------------------------------------

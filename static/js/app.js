@@ -5,6 +5,10 @@ const els = {
   station: document.getElementById("sel-station"),
   product: document.getElementById("sel-product"),
   date:    document.getElementById("sel-date"),
+  autoRefresh: document.getElementById("chk-auto-refresh"),
+  btnRefresh: document.getElementById("btn-refresh"),
+  btnPrev: document.getElementById("btn-prev-frame"),
+  btnNext: document.getElementById("btn-next-frame"),
   status:  document.getElementById("status"),
   frame:   document.getElementById("frame"),
   loading: document.getElementById("overlay-loading"),
@@ -40,6 +44,7 @@ const state = {
   autoRefreshTimer: null,
   loadingTimer: null,
   timelineHoverIdx: -1,
+  forceLatestOnNextLoad: false,
 };
 
 const PRODUCT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -153,6 +158,10 @@ function bindEvents() {
   els.station.addEventListener("change", onStationChange);
   els.date.addEventListener("change", onDateChange);
   els.product.addEventListener("change", onProductChange);
+  els.autoRefresh.addEventListener("change", onAutoRefreshToggle);
+  els.btnRefresh.addEventListener("click", onManualRefresh);
+  els.btnPrev.addEventListener("click", onPrevFrame);
+  els.btnNext.addEventListener("click", onNextFrame);
   els.btnPlay.addEventListener("click", togglePlay);
   els.timeline.addEventListener("mousemove", onTimelineHover);
   els.timeline.addEventListener("mouseleave", onTimelineLeave);
@@ -174,10 +183,10 @@ async function onStationChange() {
   setStatus("");
 
   if (!state.station) return;
-  loadDates(state.station);
+  loadDates(state.station, { autoSwitchCR: true });
 }
 
-async function loadDates(station) {
+async function loadDates(station, opts = {}) {
   if (station !== els.station.value) return; // station changed mid-flight
   try {
     const r = await getJson(`/api/dates?station=${encodeURIComponent(station)}`);
@@ -197,15 +206,48 @@ async function loadDates(station) {
     els.date.max = maxD;
     els.date.disabled = false;
     if (!els.date.value) els.date.value = maxD;
+    state.date = inputValueToYmd(els.date.value);
     state.availableDates = new Set(r.dates);
     if (r.refreshing) {
       setStatus("索引刷新中（后台进行，不影响使用）", "");
     } else {
       setStatus("");
     }
-    onDateChange();
+    if (opts.autoSwitchCR) {
+      await switchToLatestCR();
+    } else {
+      onDateChange();
+    }
   } catch (e) {
     setStatus("加载日期失败: " + e.message, "err");
+  }
+}
+
+async function switchToLatestCR() {
+  if (!state.station) return;
+  const activeDate = state.date || inputValueToYmd(els.date.value);
+  if (!activeDate) return;
+  state.date = activeDate;
+  try {
+    const { products } = await getJson(
+      `/api/products?station=${encodeURIComponent(state.station)}&date=${encodeURIComponent(state.date)}`
+    );
+    fillSelect(els.product, products, "请选择产品");
+    els.product.disabled = products.length === 0;
+    if (products.length === 0) {
+      setStatus("该站点最新日期下没有可用产品", "err");
+      return;
+    }
+    const productCodes = products.map(p => (typeof p === "string" ? p : (p.code ?? p.value ?? "")));
+    const target = productCodes.includes("CR") ? "CR" : productCodes[0];
+    if (!productCodes.includes("CR")) {
+      setStatus("该站点最新日期无组合反射率，已切换到首个产品", "err");
+    }
+    els.product.value = target;
+    state.forceLatestOnNextLoad = true;
+    await onProductChange();
+  } catch (e) {
+    setStatus("加载产品失败: " + e.message, "err");
   }
 }
 
@@ -252,8 +294,10 @@ async function onProductChange() {
       showOverlay(els.empty, "无可用文件");
       return;
     }
-    state.tIdx = 0;
-    state.eIdx = 0;
+    const preferLatest = state.forceLatestOnNextLoad || isAutoRefreshEnabled();
+    state.forceLatestOnNextLoad = false;
+    state.tIdx = preferLatest ? state.times.length - 1 : 0;
+    state.eIdx = pickElevationForTime(state.tIdx, state.eIdx);
     buildTimeline();
     buildElevationBar();
     setStatus("");
@@ -299,8 +343,11 @@ function stopProductAutoRefresh() {
 
 function startProductAutoRefresh() {
   stopProductAutoRefresh();
+  if (!isAutoRefreshEnabled()) return;
   if (!state.station || !state.date || !state.product) return;
-  state.autoRefreshTimer = setInterval(refreshSelectedProductFiles, PRODUCT_REFRESH_INTERVAL_MS);
+  state.autoRefreshTimer = setInterval(() => {
+    refreshSelectedProductFiles({ allowDateJump: true, jumpToLatest: true, source: "auto" });
+  }, PRODUCT_REFRESH_INTERVAL_MS);
 }
 
 function pickElevationForTime(tIdx, preferredEIdx) {
@@ -312,15 +359,51 @@ function pickElevationForTime(tIdx, preferredEIdx) {
   return 0;
 }
 
-async function refreshSelectedProductFiles() {
-  if (!state.station || !state.date || !state.product) return;
+async function refreshSelectedProductFiles(opts = {}) {
+  if (!state.station) return;
+  const allowDateJump = opts.allowDateJump !== false;
+  const jumpToLatest = opts.jumpToLatest !== false;
   try {
+    const dateResp = await getJson(`/api/dates?station=${encodeURIComponent(state.station)}`);
+    const dates = dateResp.dates || [];
+    if (!dates.length) return;
+    state.availableDates = new Set(dates);
+    els.date.min = ymdToInputValue(dates[0]);
+    els.date.max = ymdToInputValue(dates[dates.length - 1]);
+
+    let targetDate = state.date;
+    const latestDate = dates[dates.length - 1];
+    if (!targetDate || !state.availableDates.has(targetDate)) targetDate = latestDate;
+    if (allowDateJump && latestDate > targetDate) {
+      targetDate = latestDate;
+      setStatus(`检测到新日期 ${targetDate}，已自动切换`, "ok");
+    }
+    if (targetDate !== state.date) {
+      state.date = targetDate;
+      els.date.value = ymdToInputValue(targetDate);
+    }
+
+    const prodResp = await getJson(
+      `/api/products?station=${encodeURIComponent(state.station)}&date=${encodeURIComponent(state.date)}`
+    );
+    const products = prodResp.products || [];
+    fillSelect(els.product, products, "请选择产品");
+    els.product.disabled = products.length === 0;
+    const productCodes = products.map(p => typeof p === "string" ? p : (p.code ?? p.value ?? ""));
+    let targetProduct = state.product;
+    if (!targetProduct || !productCodes.includes(targetProduct)) {
+      targetProduct = productCodes[0] || "";
+    }
+    state.product = targetProduct;
+    els.product.value = targetProduct;
+    if (!targetProduct) return;
+
     const data = await getJson(
       `/api/files?station=${encodeURIComponent(state.station)}` +
       `&date=${encodeURIComponent(state.date)}` +
       `&product=${encodeURIComponent(state.product)}`);
     const nextSignature = buildFilesSignature(data);
-    if (nextSignature === state.filesSignature) return;
+    if (nextSignature === state.filesSignature && !opts.force) return;
 
     const prevEIdx = state.eIdx;
     buildFromFiles(data);
@@ -328,13 +411,40 @@ async function refreshSelectedProductFiles() {
 
     buildTimeline();
     buildElevationBar();
-    const latestTIdx = state.times.length - 1;
-    const nextEIdx = pickElevationForTime(latestTIdx, prevEIdx);
-    setStatus("检测到新文件，已自动切换到最新时次", "ok");
-    await goTo(latestTIdx, nextEIdx);
+    const targetTIdx = jumpToLatest ? state.times.length - 1 : Math.min(state.tIdx, state.times.length - 1);
+    const nextEIdx = pickElevationForTime(targetTIdx, prevEIdx);
+    if (jumpToLatest) setStatus("检测到更新，已切换到最新时次", "ok");
+    await goTo(targetTIdx, nextEIdx);
   } catch (_) {
     // ignore polling errors
   }
+}
+
+function isAutoRefreshEnabled() {
+  return !!(els.autoRefresh && els.autoRefresh.checked);
+}
+
+function onAutoRefreshToggle() {
+  if (isAutoRefreshEnabled()) {
+    startProductAutoRefresh();
+    refreshSelectedProductFiles({ allowDateJump: true, jumpToLatest: true, force: true, source: "toggle" });
+  } else {
+    stopProductAutoRefresh();
+  }
+}
+
+function onManualRefresh() {
+  refreshSelectedProductFiles({ allowDateJump: true, jumpToLatest: true, force: true, source: "manual" });
+}
+
+function onPrevFrame() {
+  if (!state.times.length) return;
+  goTo(state.tIdx - 1, state.eIdx);
+}
+
+function onNextFrame() {
+  if (!state.times.length) return;
+  goTo(state.tIdx + 1, state.eIdx);
 }
 
 // ---------- Indexing ----------

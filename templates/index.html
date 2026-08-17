@@ -13,12 +13,16 @@
       <label>站号 <select id="sel-station"></select></label>
       <label>产品 <select id="sel-product" disabled></select></label>
       <label>日期 <input type="date" id="sel-date" disabled></label>
+      <label class="check-label"><input type="checkbox" id="chk-auto-refresh"> 自动刷新</label>
+      <button id="btn-refresh" type="button" title="立即刷新目录并跳到最新">刷新</button>
       <span id="status" class="status"></span>
     </div>
   </header>
 
   <main class="viewer">
     <div class="image-wrap">
+      <button id="btn-prev-frame" class="edge-nav edge-nav-left" type="button" title="上一时次">◀</button>
+      <button id="btn-next-frame" class="edge-nav edge-nav-right" type="button" title="下一时次">▶</button>
       <img id="frame" alt="">
       <div class="overlay" id="overlay-loading">渲染中…</div>
       <div class="overlay overlay-error" id="overlay-error"></div>

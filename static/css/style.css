@@ -69,6 +69,17 @@ body {
   font: inherit;
   min-width: 110px;
 }
+.controls button {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+.controls button:hover { background: #283040; }
+.check-label input[type="checkbox"] { accent-color: var(--accent-2); }
 
 .controls select:disabled,
 .controls input:disabled {
@@ -141,6 +152,25 @@ body {
   color: #c9d1d9;
 }
 .frame-info span { white-space: nowrap; }
+
+.edge-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 34px;
+  height: 64px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease;
+  z-index: 5;
+}
+.image-wrap:hover .edge-nav { opacity: 0.6; }
+.edge-nav:hover { opacity: 0.95 !important; background: rgba(20, 30, 45, 0.8); }
+.edge-nav-left { left: 8px; border-radius: 6px 0 0 6px; }
+.edge-nav-right { right: 8px; border-radius: 0 6px 6px 0; }
 
 /* ---------- Elevation bar ---------- */
 .elevation-bar {

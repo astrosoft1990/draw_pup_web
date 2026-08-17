@@ -1,7 +1,8 @@
 import cinrad
+from xarray import date_range
 
-file = r"O:\DATA\RADA\DOR\L3\PUP_ROSE2\2026\20260104\Z9437\PDP\Z_RADR_I_Z9437_20260104001745_P_DOR_CCD_PDP_150_200_5_FMT.bin"
+file = r"O:\DATA\RADA\DOR\L2\CUT\2026\20260817\Z9439\Z_RADR_I_Z9439_20260817000523_O_DOR-CUT_CC_CAP_5_1_FMT.bin.bz2"
 f = cinrad.io.read_auto(file)
-data = f.get_data()
+data = f.get_data(tilt=0,drange=200,dtype="REF")
 
 print(data)
